@@ -17,6 +17,14 @@ class ApiError extends Error {
     static conflict(message = "conflict") {
         return new ApiError(409, message)
     }
+
+    static forbidden(message = "forbidden") {               // preventing logging in non-verifed users
+        return new ApiError(412, message)
+    }
+
+    static notFound(message = "not found") {               // can use unauthorise
+        return new ApiError(412, message)
+    }
 }
 
 export default ApiError
