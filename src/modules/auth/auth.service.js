@@ -6,6 +6,7 @@ import {
 } from "../../common/utils/jwt.utils";
 import User from "./auth.model.js";
 import ApiError from "../../common/utils/api-error.js";
+import { sendVerificationEmail } from "../../common/config/email.js";
 
 const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
 
@@ -24,7 +25,12 @@ const register = async ({ name, email, password, role }) => {
     verificationToken: hashedToken,
   });
 
-  // TODO: send an email to user with token: rawToken
+  // send an email to user with token: rawToken
+  try{
+    await sendVerificationEmail(email, token)
+  } catch(error) {
+    console.error(error)
+  }
 
   const userObj = user.toObject();
   delete userObj.password;
@@ -44,6 +50,8 @@ const login = async ({ email, password }) => {
   if (!user) throw ApiError.unauthorised("Invalid Email or password");
 
   // somehow I will check password
+  const isMatch = await user.comparePassword(password)
+  if(!isMatch) throw ApiError.unauthorised("Invalid email or password")
 
   if (!user.isVerified) {
     throw ApiError.forbidden("please verify your email before login");
@@ -104,4 +112,22 @@ const forgotPassword = async (email) => {
     // TODO: mail bhejna ni aata
 }
 
-export { register, login, refresh, logout, forgotPassword};
+const verifyEmail = async (token) => {
+  const hashedToken = hashToken(token)
+  const user = await User.findOne({verificationToken: hashedToken}).select("+verificationToken")
+
+  if(!user) throw ApiError.badRequest("Invalid or expired token");
+  
+  user.isVerified = true;
+  user.verificationToken = undefined
+  await user.save()
+  return user
+}
+
+const getMe = async (userID) => {
+  const user = await User.findById(userID)
+  if(!user) throw ApiError.notFound("User not found");
+  return user
+}
+
+export { register, login, refresh, logout, forgotPassword, verifyEmail, getMe};
