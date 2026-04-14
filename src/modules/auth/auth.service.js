@@ -3,10 +3,13 @@ import {
   generateRefreshToken,
   generateResetToken,
   verifyRefreshToken,
-} from "../../common/utils/jwt.utils";
+} from "../../common/utils/jwt.utils.js";
 import User from "./auth.model.js";
 import ApiError from "../../common/utils/api-error.js";
-import { sendVerificationEmail } from "../../common/config/email.js";
+import { sendResetPasswordEmail, sendVerificationEmail } from "../../common/config/email.js";
+import crypto from "crypto";
+import fs from "node:fs"
+import imagekit from "../../common/config/imagekit.js";
 
 const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
 
@@ -27,7 +30,7 @@ const register = async ({ name, email, password, role }) => {
 
   // send an email to user with token: rawToken
   try{
-    await sendVerificationEmail(email, token)
+    await sendVerificationEmail(email, rawToken)
   } catch(error) {
     console.error(error)
   }
@@ -46,10 +49,10 @@ const login = async ({ email, password }) => {
   // generate and send token
   // store hashed refreshToken in DB
 
-  const user = await User.findOne(email).select("+password"); // we got full userObj {email, password, role, ...}
+  const user = await User.findOne({email}).select("+password"); // we got full userObj {email, password, role, ...}
   if (!user) throw ApiError.unauthorised("Invalid Email or password");
 
-  // somehow I will check password
+  // check password
   const isMatch = await user.comparePassword(password)
   if(!isMatch) throw ApiError.unauthorised("Invalid email or password")
 
@@ -79,25 +82,36 @@ const refresh = async (token) => {
 
   if (user.refreshToken !== hashToken(token)) {
     // this is our DB level check
-    throw ApiError.unauthorised("Invalid refresh token");
+    throw ApiError.unauthorised("Invalid refresh token — please log in again");
   }
 
   const accessToken = generateAccessToken({ id: user._id, role: user.role });
-  const refreshToken = generateRefreshToken({ id: user._id });
 
-  user.refreshToken = hashToken(refreshToken);
-  await user.save({ validateBeforeSave: false });
-
-  const userObj = user.toObject();
-  delete userObj.refreshToken;
-  delete userObj.password; // this like here is optional
-
-  return { user: userObj, accessToken, refreshToken };
+  return { accessToken };
 };
 
 const logout = async (userId) => {
   await User.findByIdAndUpdate(userId, { refreshToken: null });
 };
+
+const verifyEmail = async (token) => {
+  const trimmed = String(token).trim();
+  if (!trimmed) {
+    throw ApiError.badRequest("Invalid or expired verification token");
+  }
+
+  const hashedToken = hashToken(trimmed)
+  const user = await User.findOne({verificationToken: hashedToken}).select("+verificationToken")
+
+  if(!user) throw ApiError.badRequest("Invalid or expired verification token");
+  
+  await User.findByIdAndUpdate(user._id, {
+    $set: { isVerified: true },
+    $unset: { verificationToken: 1 },
+  });
+
+  return user
+}
 
 const forgotPassword = async (email) => {
     const user = await User.findOne({email})
@@ -109,19 +123,27 @@ const forgotPassword = async (email) => {
     user.resetPasswordExpires = Date.now() + 15 * 60 * 1000                 // 15 min expiry time
     await user.save()
 
-    // TODO: mail bhejna ni aata
+    try{
+      await sendResetPasswordEmail(email, rawToken)
+    } catch(err) {
+      console.error("Failed to send reset email:", err.message);
+    }
 }
 
-const verifyEmail = async (token) => {
+const resetPassword = async (token, newPassword) => {
   const hashedToken = hashToken(token)
-  const user = await User.findOne({verificationToken: hashedToken}).select("+verificationToken")
 
-  if(!user) throw ApiError.badRequest("Invalid or expired token");
-  
-  user.isVerified = true;
-  user.verificationToken = undefined
+  const user = await User.findOne({
+    resetPasswordToken: hashedToken,
+    resetPasswordExpires: { $gt: Date.now() },
+  }).select("+resetPasswordToken +resetPasswordExpires")
+
+  if (!user) throw ApiError.badRequest("Invalid or expired reset token");
+
+  user.password = newPassword
+  user.resetPasswordToken = undefined
+  user.resetPasswordExpires = undefined
   await user.save()
-  return user
 }
 
 const getMe = async (userID) => {
@@ -130,4 +152,34 @@ const getMe = async (userID) => {
   return user
 }
 
-export { register, login, refresh, logout, forgotPassword, verifyEmail, getMe};
+const avatarUpload = async (userID, file) => {
+  try {
+    const fileStream = fs.createReadStream(file.path)
+    const uploadResponse = await imagekit.files.upload({
+      file:fileStream,
+      fileName:file.filename,
+      folder:"/user-avatars"
+    })
+
+    await User.findByIdAndUpdate(userID, {avatar:uploadResponse.url}, {new:true})
+
+    fs.unlinkSync(file.path);
+
+    return {
+      url:uploadResponse.url,
+      fileId:uploadResponse.fileId
+    }
+  } catch (error) {
+      try {
+        if(file.path && fs.existsSync(file.path)){
+          fs.unlinkSync(file.path);
+        }
+      } catch (error) {
+          console.error("Error deleting temp file:", error);
+      }
+
+      throw error;
+  }
+}
+
+export { register, login, refresh, logout, verifyEmail, forgotPassword, resetPassword, getMe, avatarUpload};
