@@ -31,6 +31,7 @@ export const openidConfiguration = async (req, res) => {
     token_endpoint: `${issuer}/o/token`,
     userinfo_endpoint: `${issuer}/o/userinfo`,
     revocation_endpoint: `${issuer}/o/revoke`,
+    introspection_endpoint: `${issuer}/o/introspect`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
 
     response_types_supported: ["code"],
@@ -344,6 +345,69 @@ export const revoke = async (req, res) => {
   return res.status(200).json({
     message: "Token revoked successfully",
   });
+};
+
+export const introspect = async (req, res) => {
+  const { token, client_id, client_secret } = req.body;
+
+  const client = findClient(client_id);
+
+  if (!client || client.clientSecret !== client_secret) {
+    return res.status(401).json({
+      error: "invalid_client",
+      error_description: "Invalid client credentials",
+    });
+  }
+
+  if (!token) {
+    return res.status(400).json({
+      error: "invalid_request",
+      error_description: "token is required",
+    });
+  }
+
+  try {
+    const claims = verifyAccessToken(token);
+
+    return res.json({
+      active: true,
+      token_type: "access_token",
+      client_id: claims.aud,
+      sub: claims.sub,
+      scope: claims.scope,
+      iss: claims.iss,
+      aud: claims.aud,
+      iat: claims.iat,
+      exp: claims.exp,
+    });
+  } catch (error) {
+    const storedRefreshToken = await RefreshToken.findOne({
+      token,
+      clientId: client_id,
+    }).populate("user");
+
+    if (!storedRefreshToken) {
+      return res.json({
+        active: false,
+      });
+    }
+
+    if (storedRefreshToken.revoked || storedRefreshToken.expiresAt < new Date()) {
+      return res.json({
+        active: false,
+      });
+    }
+
+    return res.json({
+      active: true,
+      token_type: "refresh_token",
+      client_id,
+      sub: String(storedRefreshToken.user._id),
+      scope: storedRefreshToken.scope,
+      iat: Math.floor(storedRefreshToken.createdAt.getTime() / 1000),
+      exp: Math.floor(storedRefreshToken.expiresAt.getTime() / 1000),
+    });
+  }
 };
 
 export const userInfo = async (req, res) => {
