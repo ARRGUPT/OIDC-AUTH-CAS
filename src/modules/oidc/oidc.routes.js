@@ -6,8 +6,11 @@ const router = Router();
 router.get("/.well-known/openid-configuration", controller.openidConfiguration);
 router.get("/.well-known/jwks.json", controller.jwks);
 
-router.get("/o/authenticate", controller.oAuthenticate)
-router.get("/o/authorize", controller.authorize);
+// router.get("/o/authenticate", controller.oAuthenticate)
+router.post("/o/login", controller.oLogin)
+router.post("/o/logout", controller.oLogout);
+
+router.get("/o/authorize", controller.oAuthorize);
 router.post("/o/token", controller.token);
 router.get("/o/userinfo", controller.userInfo);
 

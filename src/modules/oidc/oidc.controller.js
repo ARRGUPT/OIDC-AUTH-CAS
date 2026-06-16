@@ -60,15 +60,52 @@ export const oAuthenticate = async (req, res) => {
   return res.sendFile(path.resolve("public", "authenticate.html"));
 };
 
-export const authorize = async (req, res) => {
+export const oLogin = async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    throw ApiError.badRequest("Email and password are required");
+  }
+
+  const user = await User.findOne({ email }).select("+password");
+
+  if (!user) {
+    throw ApiError.unauthorised("Invalid email or password");
+  }
+
+  const isPasswordCorrect = await user.comparePassword(password);
+
+  if (!isPasswordCorrect) {
+    throw ApiError.unauthorised("Invalid email or password");
+  }
+
+  if (!user.isVerified) {
+    throw ApiError.forbidden("Please verify your email before login");
+  }
+
+  req.session.userId = String(user._id);
+
+  return res.json({
+    success: true,
+    message: "Logged in success",
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+    },
+  });
+};
+
+export const oAuthorize = async (req, res) => {
   const {
     response_type,
     client_id,
     redirect_uri,
     scope = "openid email profile",
     state,                                    // is a security value, used to prevent CSRF attacks and help client application remember context
-    user_id,
   } = req.query;
+
+  // console.log(req.session);
 
   if (response_type !== "code") {
     return res.status(400).json({
@@ -93,18 +130,18 @@ export const authorize = async (req, res) => {
     });
   }
 
-  if (!user_id) {
-    return res.status(401).json({
-      error: "login_required",
-      error_description: "For now, pass user_id after login",
-    });
-  }
+  if (!req.session.userId) {
+  return res.status(401).json({
+    error: "login_required",
+    error_description: "Please login first",
+  });
+}
 
   const code = crypto.randomBytes(32).toString("hex");
 
   await AuthorizationCode.create({
     code,
-    user: user_id,
+    user: req.session.userId,
     clientId: client_id,
     redirectUri: redirect_uri,
     scope,
@@ -186,6 +223,21 @@ export const token = async (req, res) => {
     token_type: "Bearer",
     expires_in: 3600,
     id_token: idToken,
+  });
+};
+
+export const oLogout = async (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      throw ApiError.internal("Logout failed");
+    }
+
+    res.clearCookie("trush.sid");
+
+    return res.json({
+      success: true,
+      message: "Logged out success",
+    });
   });
 };
 
