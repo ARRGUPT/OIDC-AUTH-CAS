@@ -12,6 +12,7 @@ router.post("/o/logout", controller.oLogout);
 
 router.get("/o/authorize", controller.oAuthorize);
 router.post("/o/token", controller.token);
+router.post("/o/revoke", controller.revoke)
 router.get("/o/userinfo", controller.userInfo);
 
 export default router;

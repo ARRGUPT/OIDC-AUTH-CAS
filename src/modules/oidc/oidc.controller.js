@@ -30,6 +30,7 @@ export const openidConfiguration = async (req, res) => {
     authorization_endpoint: `${issuer}/o/authorize`,
     token_endpoint: `${issuer}/o/token`,
     userinfo_endpoint: `${issuer}/o/userinfo`,
+    revocation_endpoint: `${issuer}/o/revoke`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
 
     response_types_supported: ["code"],
@@ -311,6 +312,37 @@ export const oLogout = async (req, res) => {
       success: true,
       message: "Logged out success",
     });
+  });
+};
+
+export const revoke = async (req, res) => {
+  const { refresh_token, client_id, client_secret  } = req.body;
+
+  const client = findClient(client_id);
+
+  if(!client || client.clientSecret != client_secret) {
+    return res.status(401).json({
+      error: "invalid_client",
+      error_description: "Invalid client credentials",
+    })
+  }
+  
+  if(!refresh_token) {
+    return res.status(401).json({
+      error: "invalid_request",
+      error_description: "token is required",
+    })
+  }
+
+  const storedRefreshToken = await RefreshToken.findOne({ token: refresh_token, clientId: client_id});
+
+  if(storedRefreshToken) {
+    storedRefreshToken.revoked = true;
+    await storedRefreshToken.save();
+  }
+
+  return res.status(200).json({
+    message: "Token revoked successfully",
   });
 };
 
