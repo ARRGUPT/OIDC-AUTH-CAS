@@ -21,7 +21,7 @@ export const openidConfiguration = async (req, res) => {
 
   return res.json({
     issuer,
-    authorization_endpoint: `${issuer}/o/authenticate`,
+    authorization_endpoint: `${issuer}/o/authorize`,
     token_endpoint: `${issuer}/o/token`,
     userinfo_endpoint: `${issuer}/o/userinfo`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
