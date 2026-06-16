@@ -28,7 +28,32 @@ export const generateIdToken = (user) => {
   });
 };
 
+export const generateAccessToken = (user, clientId, scope) => {
+  const now = Math.floor(Date.now() / 1000);
+
+  const claims = {
+    iss: getIssuer(),
+    sub: String(user._id),
+    aud: clientId,
+    scope,
+    token_use: "access_token",
+    exp: now + 60 * 60,
+    iat: now,
+  };
+
+  return jwt.sign(claims, PRIVATE_KEY, {
+    algorithm: "RS256",
+    keyid: "main-key",
+  });
+};
+
 export const verifyIdToken = (token) => {
+  return jwt.verify(token, PUBLIC_KEY, {
+    algorithms: ["RS256"],
+  });
+};
+
+export const verifyAccessToken = (token) => {
   return jwt.verify(token, PUBLIC_KEY, {
     algorithms: ["RS256"],
   });

@@ -6,7 +6,13 @@ import jose from "node-jose";
 import User from "../auth/auth.model.js";
 import ApiError from "../../common/utils/api-error.js";
 import { PUBLIC_KEY } from "../../common/utils/cert.utils.js";
-import {generateIdToken,verifyIdToken} from "../../common/utils/oidc-token.utils.js";
+import {
+  generateIdToken,
+  verifyIdToken,
+  generateAccessToken,
+  verifyAccessToken,
+} from "../../common/utils/oidc-token.utils.js";
+import RefreshToken from "./refresh-token.model.js";
 import AuthorizationCode from "./authorization-code.model.js";
 import { findClient } from "./oidc.clients.js";
 
@@ -27,12 +33,12 @@ export const openidConfiguration = async (req, res) => {
     jwks_uri: `${issuer}/.well-known/jwks.json`,
 
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
 
-    subject_types_supported: ["public"],                        // public: same user gets same sub(user id) everywhere | pairwise: diff sub
+    subject_types_supported: ["public"], // public: same user gets same sub(user id) everywhere | pairwise: diff sub
     id_token_signing_alg_values_supported: ["RS256"],
 
-    scopes_supported: ["openid", "email", "profile"],           // client can request full claim (sub, email, ...)
+    scopes_supported: ["openid", "email", "profile"], // client can request full claim (sub, email, ...)
 
     claims_supported: [
       "sub",
@@ -102,7 +108,7 @@ export const oAuthorize = async (req, res) => {
     client_id,
     redirect_uri,
     scope = "openid email profile",
-    state,                                    // is a security value, used to prevent CSRF attacks and help client application remember context
+    state,                                // is a security value, used to prevent CSRF attacks and help client application remember context
   } = req.query;
 
   // console.log(req.session);
@@ -131,11 +137,11 @@ export const oAuthorize = async (req, res) => {
   }
 
   if (!req.session.userId) {
-  return res.status(401).json({
-    error: "login_required",
-    error_description: "Please login first",
-  });
-}
+    return res.status(401).json({
+      error: "login_required",
+      error_description: "Please login first",
+    });
+  }
 
   const code = crypto.randomBytes(32).toString("hex");
 
@@ -145,7 +151,7 @@ export const oAuthorize = async (req, res) => {
     clientId: client_id,
     redirectUri: redirect_uri,
     scope,
-    expiresAt: new Date(Date.now() + 1 * 60 * 1000),         // 1 min
+    expiresAt: new Date(Date.now() + 1 * 60 * 1000), // 1 min
   });
 
   const redirectUrl = new URL(redirect_uri);
@@ -163,17 +169,11 @@ export const token = async (req, res) => {
   const {
     grant_type,
     code,
+    refresh_token,
     client_id,
     client_secret,
     redirect_uri,
   } = req.body;
-
-  if (grant_type !== "authorization_code") {
-    return res.status(400).json({
-      error: "unsupported_grant_type",
-      error_description: "Only authorization_code grant is supported",
-    });
-  }
 
   const client = findClient(client_id);
 
@@ -184,45 +184,118 @@ export const token = async (req, res) => {
     });
   }
 
-  const authCode = await AuthorizationCode.findOne({ code }).populate("user");
+  if (grant_type === "authorization_code") {
+    const authCode = await AuthorizationCode.findOne({ code }).populate("user");
 
-  if (!authCode) {
-    return res.status(400).json({
-      error: "invalid_grant",
-      error_description: "Invalid authorization code",
+    if (!authCode) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Invalid authorization code",
+      });
+    }
+
+    if (authCode.used) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Authorization code already used",
+      });
+    }
+
+    if (authCode.expiresAt < new Date()) {
+      // 10:01:00 < 10:03:00
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Authorization code expired",
+      });
+    }
+
+    if (
+      authCode.clientId !== client_id ||
+      authCode.redirectUri !== redirect_uri
+    ) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description:
+          "Authorization code does not match client or redirect_uri",
+      });
+    }
+
+    authCode.used = true;
+    await authCode.save();
+
+    const accessToken = generateAccessToken(
+      authCode.user,
+      client_id,
+      authCode.scope,
+    );
+
+    const idToken = generateIdToken(authCode.user);
+
+    const newRefreshToken = crypto.randomBytes(64).toString("hex");
+
+    await RefreshToken.create({
+      token: newRefreshToken,
+      user: authCode.user._id,
+      clientId: client_id,
+      scope: authCode.scope,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+
+    return res.json({
+      token_type: "Bearer",
+      expires_in: 3600,
+      access_Token: accessToken,
+      id_token: idToken,
+      refresh_token: newRefreshToken,
     });
   }
 
-  if (authCode.used) {
-    return res.status(400).json({
-      error: "invalid_grant",
-      error_description: "Authorization code already used",
+  if (grant_type === "refresh_token") {
+    const storedRefreshToken = await RefreshToken.findOne({
+      token: refresh_token,
+      clientId: client_id,
+    }).populate("user");
+
+    if (!storedRefreshToken) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Invalid refresh token",
+      });
+    }
+
+    if (storedRefreshToken.revoked) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Refresh token has been revoked",
+      });
+    }
+
+    if (storedRefreshToken.expiresAt < new Date()) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Refresh token expired",
+      });
+    }
+
+    const accessToken = generateAccessToken(
+      storedRefreshToken.user,
+      client_id,
+      storedRefreshToken.scope,
+    );
+
+    const idToken = generateIdToken(storedRefreshToken.user);
+
+    return res.json({
+      token_type: "Bearer",
+      expires_in: 3600,
+      access_Token: accessToken,
+      id_token: idToken,
     });
   }
 
-  if (authCode.expiresAt < new Date()) {                    // 10:01:00 < 10:03:00
-    return res.status(400).json({
-      error: "invalid_grant",
-      error_description: "Authorization code expired",
-    });
-  }
-
-  if (authCode.clientId !== client_id || authCode.redirectUri !== redirect_uri) {
-    return res.status(400).json({
-      error: "invalid_grant",
-      error_description: "Authorization code does not match client or redirect_uri",
-    });
-  }
-
-  authCode.used = true;
-  await authCode.save();
-
-  const idToken = generateIdToken(authCode.user);
-
-  return res.json({
-    token_type: "Bearer",
-    expires_in: 3600,
-    id_token: idToken,
+  return res.status(400).json({
+    error: "unsupported_grant_type",
+    error_description: "Only authorization_code and refresh_token grants are supported",
   });
 };
 
@@ -249,7 +322,7 @@ export const userInfo = async (req, res) => {
   }
 
   const token = authHeader.slice(7);
-  const claims = verifyIdToken(token);
+  const claims = verifyAccessToken(token);
 
   const user = await User.findById(claims.sub);
 
