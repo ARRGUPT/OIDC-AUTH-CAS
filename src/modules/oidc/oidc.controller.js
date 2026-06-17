@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 
 import jose from "node-jose";
+import bcrypt from "bcryptjs";
 
 import User from "../auth/auth.model.js";
 import ApiError from "../../common/utils/api-error.js";
@@ -110,7 +111,7 @@ export const oAuthorize = async (req, res) => {
     client_id,
     redirect_uri,
     scope = "openid email profile",
-    state,                                // is a security value, used to prevent CSRF attacks and help client application remember context
+    state, // is a security value, used to prevent CSRF attacks and help client application remember context
   } = req.query;
 
   // console.log(req.session);
@@ -122,7 +123,7 @@ export const oAuthorize = async (req, res) => {
     });
   }
 
-  const client = findClient(client_id);
+  const client = await findClient(client_id);
 
   if (!client) {
     return res.status(400).json({
@@ -177,9 +178,18 @@ export const token = async (req, res) => {
     redirect_uri,
   } = req.body;
 
-  const client = findClient(client_id);
+  const client = await findClient(client_id);
 
-  if (!client || client.clientSecret !== client_secret) {
+  if (!client) {
+    return res.status(401).json({
+      error: "invalid_client",
+      error_description: "Invalid client",
+    });
+  }
+
+  const isValid = await bcrypt.compare(client_secret, client.clientSecret);
+
+  if (!isValid) {
     return res.status(401).json({
       error: "invalid_client",
       error_description: "Invalid client credentials",
@@ -297,7 +307,8 @@ export const token = async (req, res) => {
 
   return res.status(400).json({
     error: "unsupported_grant_type",
-    error_description: "Only authorization_code and refresh_token grants are supported",
+    error_description:
+      "Only authorization_code and refresh_token grants are supported",
   });
 };
 
@@ -317,27 +328,39 @@ export const oLogout = async (req, res) => {
 };
 
 export const revoke = async (req, res) => {
-  const { refresh_token, client_id, client_secret  } = req.body;
+  const { refresh_token, client_id, client_secret } = req.body;
 
-  const client = findClient(client_id);
+  const client = await findClient(client_id);
 
-  if(!client || client.clientSecret != client_secret) {
+  if (!client) {
+    return res.status(401).json({
+      error: "invalid_client",
+      error_description: "Invalid client",
+    });
+  }
+
+  const isValid = await bcrypt.compare(client_secret, client.clientSecret);
+
+  if (!isValid) {
     return res.status(401).json({
       error: "invalid_client",
       error_description: "Invalid client credentials",
-    })
+    });
   }
-  
-  if(!refresh_token) {
+
+  if (!refresh_token) {
     return res.status(401).json({
       error: "invalid_request",
       error_description: "token is required",
-    })
+    });
   }
 
-  const storedRefreshToken = await RefreshToken.findOne({ token: refresh_token, clientId: client_id});
+  const storedRefreshToken = await RefreshToken.findOne({
+    token: refresh_token,
+    clientId: client_id,
+  });
 
-  if(storedRefreshToken) {
+  if (storedRefreshToken) {
     storedRefreshToken.revoked = true;
     await storedRefreshToken.save();
   }
@@ -350,9 +373,18 @@ export const revoke = async (req, res) => {
 export const introspect = async (req, res) => {
   const { token, client_id, client_secret } = req.body;
 
-  const client = findClient(client_id);
+  const client = await findClient(client_id);
 
-  if (!client || client.clientSecret !== client_secret) {
+  if (!client) {
+    return res.status(401).json({
+      error: "invalid_client",
+      error_description: "Invalid client",
+    });
+  }
+
+  const isValid = await bcrypt.compare(client_secret, client.clientSecret);
+
+  if (!isValid) {
     return res.status(401).json({
       error: "invalid_client",
       error_description: "Invalid client credentials",
@@ -392,7 +424,10 @@ export const introspect = async (req, res) => {
       });
     }
 
-    if (storedRefreshToken.revoked || storedRefreshToken.expiresAt < new Date()) {
+    if (
+      storedRefreshToken.revoked ||
+      storedRefreshToken.expiresAt < new Date()
+    ) {
       return res.json({
         active: false,
       });

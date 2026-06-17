@@ -1,11 +1,8 @@
-export const clients = [
-  {
-    clientId: "trush-blog",
-    clientSecret: "trush-blog-secret",
-    redirectUris: ["http://localhost:3000/callback"],
-  },
-];
+import Client from "./client.model.js";
 
-export const findClient = (clientId) => {
-  return clients.find((client) => client.clientId === clientId);
+export const findClient = async (clientId) => {
+  return await Client.findOne({
+    clientId,
+    isActive: true,
+  });
 };
